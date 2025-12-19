@@ -1,7 +1,12 @@
 import { HulyClient } from './huly-client.js'
 import { OllamaClient, BotAction } from './ollama.js'
 import { config } from './config.js'
-import { isHulyQuestion } from './huly-knowledge.js'
+import { appendFileSync } from 'fs'
+
+function log(msg: string) {
+  const line = `[${new Date().toISOString()}] ${msg}\n`
+  appendFileSync('/tmp/huly-bot-debug.log', line)
+}
 
 interface AgentState {
   lastActionTime: number
@@ -170,14 +175,16 @@ export class HulyAgent {
       messages.sort((a, b) => (a.createdOn || 0) - (b.createdOn || 0))
 
       // Check if there are new messages
+      log(`Messages count: ${messages.length}, lastCount: ${this.lastMessageCount}`)
       if (messages.length > this.lastMessageCount) {
         const newMessages = messages.slice(this.lastMessageCount)
-        console.log(`Found ${newMessages.length} new message(s)`)
+        log(`Found ${newMessages.length} new message(s)`)
 
         for (const msg of newMessages) {
+          log(`Processing msg ${msg._id} from ${msg.createdBy}`)
           // Skip messages from the bot itself
           if (msg.createdBy === config.huly.socialId) {
-            console.log('Skipping own message')
+            log('Skipping own message')
             continue
           }
 
@@ -185,18 +192,14 @@ export class HulyAgent {
           try {
             const content = JSON.parse(msg.message)
             const text = content?.content?.[0]?.content?.[0]?.text || ''
-            console.log(`New message from others: "${text.slice(0, 100)}"`)
+            log(`Message text: "${text.slice(0, 100)}"`)
 
-            // Check if we should respond:
-            // 1. Direct mention (bot, huly bot, @bot)
-            // 2. A question about Huly features
-            const lowerText = text.toLowerCase()
-            const isDirectMention = lowerText.includes('bot') || lowerText.includes('@huly')
-            const isHulyHelp = isHulyQuestion(text)
+            // Ask LLM if we should respond to this message
+            const shouldRespond = await this.ollama.shouldRespond(text)
+            log(`Should respond: ${shouldRespond}`)
 
-            if (isDirectMention || isHulyHelp) {
-              const reason = isDirectMention ? 'direct mention' : 'Huly question detected'
-              console.log(`Responding (${reason})...`)
+            if (shouldRespond) {
+              log('Generating response...')
               const response = await this.ollama.chat(text)
               // Strip JSON wrapper if present (in case model outputs JSON anyway)
               let cleanResponse = response
@@ -206,13 +209,15 @@ export class HulyAgent {
               } catch {
                 // Use response as-is if not JSON
               }
-              console.log(`Responding with: "${cleanResponse.slice(0, 100)}"`)
+              log(`Responding with: "${cleanResponse.slice(0, 100)}"`)
               await this.huly.sendChatMessage('chunter:space:General', cleanResponse)
+              log('Response sent')
             }
           } catch (e) {
             // Skip unparseable messages
           }
         }
+        log(`Updating lastMessageCount from ${this.lastMessageCount} to ${messages.length}`)
         this.lastMessageCount = messages.length
       }
     } catch (e) {

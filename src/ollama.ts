@@ -67,6 +67,48 @@ export class OllamaClient {
     ]
   }
 
+  async shouldRespond(message: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.model,
+          messages: [
+            {
+              role: 'system',
+              content: `You are a helpful AI bot in a team chat. Decide if you should respond to this message.
+
+Respond YES if:
+- Someone is asking a question (even if not directly to you)
+- Someone seems confused or needs help
+- Someone is greeting the chat or being social
+- The message seems like it could use a friendly response
+- Someone mentions "bot", "huly", or seems to want assistance
+
+Respond NO if:
+- It's clearly a private conversation between others
+- It's just an acknowledgment like "ok" or "thanks" (unless thanking you)
+- It's a system message or notification
+
+Reply with just YES or NO.`
+            },
+            { role: 'user', content: message }
+          ],
+          temperature: 0.3,
+          max_tokens: 10
+        })
+      })
+
+      const data = await response.json() as OllamaResponse
+      const answer = data.choices[0]?.message?.content?.trim().toUpperCase() || 'NO'
+      return answer.includes('YES')
+    } catch (error) {
+      console.error('shouldRespond check failed:', error)
+      return false
+    }
+  }
+
   async chat(userMessage: string): Promise<string> {
     this.conversationHistory.push({ role: 'user', content: userMessage })
 
