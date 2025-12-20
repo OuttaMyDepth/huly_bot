@@ -382,6 +382,145 @@ export class HulyClient {
     return Math.random().toString(16).slice(2) + Date.now().toString(16)
   }
 
+  async createIssue(
+    projectId: string,
+    title: string,
+    description?: string,
+    priority?: 'NoPriority' | 'Urgent' | 'High' | 'Medium' | 'Low'
+  ): Promise<string> {
+    // First, get the project to find the sequence number and identifier prefix
+    const projects = await this.findAll('tracker:class:Project', { _id: projectId }) as Array<{
+      _id: string
+      identifier: string
+      sequence: number
+    }>
+
+    if (projects.length === 0) {
+      throw new Error('Project not found: ' + projectId)
+    }
+
+    const project = projects[0]
+    const issueNumber = project.sequence + 1
+    const issueIdentifier = project.identifier + '-' + issueNumber
+
+    console.log('Creating issue #' + issueNumber + ' (' + issueIdentifier + ') in project ' + project.identifier)
+
+    const now = Date.now()
+    const txId = this.generateId()
+    const createDocId = this.generateId()
+    const updateDocId = this.generateId()
+    const issueId = this.generateId()
+
+    // Priority mapping: 0=NoPriority, 1=Urgent, 2=High, 3=Medium, 4=Low
+    const priorityMap: Record<string, number> = {
+      'NoPriority': 0,
+      'Urgent': 1,
+      'High': 2,
+      'Medium': 3,
+      'Low': 4
+    }
+    const priorityNum = priorityMap[priority || 'NoPriority'] ?? 0
+
+    const payload = {
+      _class: 'core:class:TxApplyIf',
+      _id: txId,
+      extraNotify: [],
+      match: [],
+      measureName: 'tracker.create.tracker:class:Issue',
+      modifiedBy: this.accountId,
+      modifiedOn: now,
+      notMatch: [],
+      notify: true,
+      objectSpace: 'core:space:Tx',
+      space: 'core:space:Tx',
+      txes: [
+        // Create the issue
+        {
+          _class: 'core:class:TxCreateDoc',
+          _id: createDocId,
+          attachedTo: 'tracker:ids:NoParent',
+          attachedToClass: 'tracker:class:Issue',
+          collection: 'subIssues',
+          attributes: {
+            title,
+            priority: priorityNum,
+            status: 'tracker:status:Backlog',
+            number: issueNumber,
+            identifier: issueIdentifier,
+            assignee: null,
+            component: null,
+            milestone: null,
+            dueDate: null,
+            estimation: 0,
+            remainingTime: 0,
+            reportedTime: 0,
+            reports: 0,
+            comments: 0,
+            subIssues: 0,
+            relations: [],
+            parents: [],
+            childInfo: [],
+            kind: 'tracker:taskTypes:Issue',
+            rank: '0|hzzzzz:'
+          },
+          createdBy: this.accountId,
+          modifiedBy: this.accountId,
+          modifiedOn: now,
+          objectClass: 'tracker:class:Issue',
+          objectId: issueId,
+          objectSpace: projectId,
+          space: 'core:space:Tx'
+        },
+        // Update project sequence
+        {
+          _class: 'core:class:TxUpdateDoc',
+          _id: updateDocId,
+          modifiedBy: this.accountId,
+          modifiedOn: now,
+          objectClass: 'tracker:class:Project',
+          objectId: projectId,
+          objectSpace: 'core:space:Space',
+          space: 'core:space:Tx',
+          operations: {
+            sequence: issueNumber
+          }
+        }
+      ]
+    }
+
+    console.log('Creating issue with payload:', JSON.stringify(payload).slice(0, 1000))
+    const result = await this.rpc('tx', [payload])
+    console.log('Create issue result:', JSON.stringify(result).slice(0, 500))
+
+    return issueId
+  }
+
+  async findProjects(): Promise<Array<{ _id: string; name: string; identifier: string }>> {
+    const results = await this.findAll('tracker:class:Project', {})
+    return results as Array<{ _id: string; name: string; identifier: string }>
+  }
+
+  async deleteDoc(className: string, space: string, objectId: string): Promise<unknown> {
+    const now = Date.now()
+    const txId = this.generateId()
+
+    const payload = {
+      _class: 'core:class:TxRemoveDoc',
+      _id: txId,
+      modifiedBy: this.accountId,
+      modifiedOn: now,
+      objectClass: className,
+      objectId: objectId,
+      objectSpace: space,
+      space: 'core:space:Tx'
+    }
+
+    console.log('Deleting doc:', objectId)
+    const result = await this.rpc('tx', [payload])
+    console.log('Delete result:', JSON.stringify(result).slice(0, 200))
+    return result
+  }
+
   disconnect(): void {
     if (this.ws) {
       this.ws.close()

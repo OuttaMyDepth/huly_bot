@@ -18,7 +18,8 @@ export const config = {
   bot: {
     personality: process.env.BOT_PERSONALITY || 'chaotic-helpful',
     actionIntervalMs: parseInt(process.env.ACTION_INTERVAL_MS || '30000'),
-    maxActionsPerMinute: parseInt(process.env.MAX_ACTIONS_PER_MINUTE || '10')
+    maxActionsPerMinute: parseInt(process.env.MAX_ACTIONS_PER_MINUTE || '10'),
+    preferredProject: process.env.BOT_PREFERRED_PROJECT || ''
   }
 }
 

@@ -1,5 +1,5 @@
 import { HulyClient } from './huly-client.js'
-import { OllamaClient, BotAction } from './ollama.js'
+import { OllamaClient, BotAction, DetectedIntent } from './ollama.js'
 import { config } from './config.js'
 import { appendFileSync } from 'fs'
 
@@ -14,6 +14,7 @@ interface AgentState {
   minuteStart: number
   recentActivity: string[]
   workspace: string | null
+  defaultProject: { _id: string; name: string; identifier: string } | null
 }
 
 export class HulyAgent {
@@ -30,7 +31,8 @@ export class HulyAgent {
       actionsThisMinute: 0,
       minuteStart: Date.now(),
       recentActivity: [],
-      workspace: null
+      workspace: null,
+      defaultProject: null
     }
   }
 
@@ -97,6 +99,9 @@ export class HulyAgent {
     console.log('\n=== EXPLORING WORKSPACE ===')
     await this.explore()
     console.log('=== EXPLORATION COMPLETE ===\n')
+
+    // Discover projects for issue creation
+    await this.discoverProjects()
 
     // Initialize message count so we don't respond to old messages on restart
     const existingMessages = await this.huly.findAll('chunter:class:ChatMessage', {}) as unknown[]
@@ -199,19 +204,29 @@ export class HulyAgent {
             log(`Should respond: ${shouldRespond}`)
 
             if (shouldRespond) {
-              log('Generating response...')
-              const response = await this.ollama.chat(text)
-              // Strip JSON wrapper if present (in case model outputs JSON anyway)
-              let cleanResponse = response
-              try {
-                const parsed = JSON.parse(response.match(/\{[\s\S]*\}/)?.[0] || '{}')
-                cleanResponse = parsed.content || parsed.description || parsed.reason || response
-              } catch {
-                // Use response as-is if not JSON
+              // Detect intent - is this a request to create an issue?
+              const intent = await this.ollama.detectIntent(text)
+              log(`Detected intent: ${JSON.stringify(intent)}`)
+
+              if (intent.type === 'create_issue' && intent.issueTitle) {
+                // Handle issue creation
+                await this.handleCreateIssue(intent, text)
+              } else {
+                // Regular chat response
+                log('Generating response...')
+                const response = await this.ollama.chat(text)
+                // Strip JSON wrapper if present (in case model outputs JSON anyway)
+                let cleanResponse = response
+                try {
+                  const parsed = JSON.parse(response.match(/\{[\s\S]*\}/)?.[0] || '{}')
+                  cleanResponse = parsed.content || parsed.description || parsed.reason || response
+                } catch {
+                  // Use response as-is if not JSON
+                }
+                log(`Responding with: "${cleanResponse.slice(0, 100)}"`)
+                await this.huly.sendChatMessage('chunter:space:General', cleanResponse)
+                log('Response sent')
               }
-              log(`Responding with: "${cleanResponse.slice(0, 100)}"`)
-              await this.huly.sendChatMessage('chunter:space:General', cleanResponse)
-              log('Response sent')
             }
           } catch (e) {
             // Skip unparseable messages
@@ -286,6 +301,87 @@ export class HulyAgent {
     }
   }
 
+  private async handleCreateIssue(intent: DetectedIntent, originalMessage: string): Promise<void> {
+    if (!this.state.defaultProject) {
+      log('No project available for issue creation')
+      await this.huly.sendChatMessage(
+        'chunter:space:General',
+        "I'd love to create that issue, but I don't see any projects in this workspace yet. Create a project first and I'll be ready to help!"
+      )
+      return
+    }
+
+    try {
+      const title = intent.issueTitle!
+      const description = intent.issueDescription
+      const priority = intent.issuePriority || 'Medium'
+
+      log(`Creating issue: "${title}" with priority ${priority}`)
+
+      const issueId = await this.huly.createIssue(
+        this.state.defaultProject._id,
+        title,
+        description,
+        priority === 'Medium' ? undefined : priority
+      )
+
+      log(`Issue created with ID: ${issueId}`)
+
+      // Send confirmation message
+      const projectId = this.state.defaultProject.identifier
+      await this.huly.sendChatMessage(
+        'chunter:space:General',
+        `Done! I created issue "${title}" in ${this.state.defaultProject.name}. Priority: ${priority}`
+      )
+
+      this.addActivity(`Created issue: ${title}`)
+    } catch (error) {
+      log(`Failed to create issue: ${error}`)
+      await this.huly.sendChatMessage(
+        'chunter:space:General',
+        `Hmm, I tried to create that issue but something went wrong. Could you try again?`
+      )
+    }
+  }
+
+  private async discoverProjects(): Promise<void> {
+    try {
+      const projects = await this.huly.findProjects()
+      console.log(`Found ${projects.length} project(s)`)
+
+      if (projects.length > 0) {
+        // Use preferred project from config if specified, otherwise first project
+        let selectedProject = projects[0]
+        if (config.bot.preferredProject) {
+          const preferred = projects.find(p =>
+            p.name.toLowerCase().includes(config.bot.preferredProject.toLowerCase()) ||
+            p.identifier === config.bot.preferredProject
+          )
+          if (preferred) {
+            selectedProject = preferred
+          }
+        }
+        this.state.defaultProject = selectedProject
+        console.log(`Default project: ${this.state.defaultProject.name} (${this.state.defaultProject.identifier})`)
+        for (const p of projects) {
+          console.log(`  - ${p.name} (${p.identifier}): ${p._id}`)
+        }
+      } else {
+        console.log('No projects found. Issue creation will be disabled.')
+      }
+
+      // Debug: dump full issue structure
+      const issues = await this.huly.findAll('tracker:class:Issue', {}) as unknown[]
+      if (issues.length > 0) {
+        console.log('\n=== SAMPLE ISSUE STRUCTURE ===')
+        console.log(JSON.stringify(issues[0], null, 2))
+        console.log('=== END SAMPLE ===\n')
+      }
+    } catch (error) {
+      console.error('Failed to discover projects:', error)
+    }
+  }
+
   private async explore(): Promise<void> {
     try {
       // Try to discover what's in the workspace
@@ -300,6 +396,7 @@ export class HulyAgent {
         'chunter:class:ChunterMessage',
         'activity:class:ActivityMessage',
         'tracker:class:Issue',
+        'tracker:class:Project',
         'contact:class:Person',
         'core:class:Space'
       ]
