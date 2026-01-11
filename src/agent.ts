@@ -229,7 +229,9 @@ export class HulyAgent {
               }
             }
           } catch (e) {
-            // Skip unparseable messages
+            // Log the error for debugging
+            log(`Error processing message ${msg._id}: ${e}`)
+            console.error('Message processing error:', e)
           }
         }
         log(`Updating lastMessageCount from ${this.lastMessageCount} to ${messages.length}`)
